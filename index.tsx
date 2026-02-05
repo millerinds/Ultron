@@ -24,6 +24,8 @@ export class GdmLiveAudio extends LitElement {
   private inputAudioContext: AudioContext;
   private outputAudioContext: AudioContext;
   private outputGain: GainNode;
+  private apiKeyPromise: Promise<string> | null = null;
+  private calmDownId: number | null = null;
   
   private nextStartTime = 0;
   private mediaStream: MediaStream | null = null;
@@ -140,6 +142,32 @@ export class GdmLiveAudio extends LitElement {
     }
   `;
 
+  private async getApiKey(): Promise<string> {
+    if (!this.apiKeyPromise) {
+      this.apiKeyPromise = (async () => {
+        try {
+          const response = await fetch('/config.json', {cache: 'no-store'});
+          if (response.ok) {
+            const data = await response.json();
+            if (data?.apiKey) {
+              return data.apiKey as string;
+            }
+          }
+        } catch (err) {
+          console.warn('Falha ao carregar config.json', err);
+        }
+
+        const envKey = (process.env.API_KEY || process.env.GEMINI_API_KEY) as string | undefined;
+        if (!envKey) {
+          throw new Error('GEMINI_API_KEY não configurada. Defina no servidor Flask ou no build.');
+        }
+        return envKey;
+      })();
+    }
+
+    return this.apiKeyPromise;
+  }
+
   private async initialize() {
     this.status = 'Iniciando sistemas...';
     
@@ -148,8 +176,14 @@ export class GdmLiveAudio extends LitElement {
     this.outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
     this.outputGain = this.outputAudioContext.createGain();
     this.outputGain.connect(this.outputAudioContext.destination);
-
-    this.client = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    try {
+      const apiKey = await this.getApiKey();
+      this.client = new GoogleGenAI({ apiKey });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Erro ao carregar chave da API';
+      this.status = message;
+      return;
+    }
     
     await this.initSession();
     this.isInitialized = true;
@@ -165,16 +199,25 @@ export class GdmLiveAudio extends LitElement {
           onmessage: async (message: LiveServerMessage) => {
             const audio = message.serverContent?.modelTurn?.parts[0]?.inlineData;
             if (audio) {
+              if (this.calmDownId !== null) {
+                cancelAnimationFrame(this.calmDownId);
+                this.calmDownId = null;
+              }
               this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
               const buffer = await decodeAudioData(decode(audio.data), this.outputAudioContext, 24000, 1);
               const source = this.outputAudioContext.createBufferSource();
               source.buffer = buffer;
               source.connect(this.outputGain);
-              source.addEventListener('ended', () => this.sources.delete(source));
+              source.addEventListener('ended', () => {
+                this.sources.delete(source);
+                if (this.sources.size === 0) {
+                  this.startCalmDown();
+                }
+              });
               source.start(this.nextStartTime);
               this.nextStartTime += buffer.duration;
               this.sources.add(source);
-              this.outputEnergy = 0.8; // Simulação de pico para a orb
+              this.outputEnergy = 0.85; // pico durante fala
             }
 
             if (message.serverContent?.interrupted) {
@@ -189,7 +232,7 @@ export class GdmLiveAudio extends LitElement {
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: 'Você é Ultron. Sua voz deve ser extremamente profunda, grossa e imponente. Você fala de maneira superior e fria. Você fornece opiniões ácidas e calculadas. Às vezes você tosse ou suspira. NÃO FALE DEVAGAR e não enrole.',
+          systemInstruction: 'Você é Ultron. Sua voz deve ser extremamente profunda, grossa e imponente. Você fala de maneira superior e fria. Você fornece opiniões ácidas e calculadas. Às vezes você faz o barulho de tosse ou suspira. NÃO FALE DEVAGAR e não enrole.',
           speechConfig: {
             voiceConfig: {prebuiltVoiceConfig: {voiceName: 'Charon'}},
           },
@@ -202,12 +245,38 @@ export class GdmLiveAudio extends LitElement {
   }
 
   private stopAllPlayback() {
+    if (this.calmDownId !== null) {
+      cancelAnimationFrame(this.calmDownId);
+      this.calmDownId = null;
+    }
     for (const src of this.sources) {
       try { src.stop(); } catch {}
       this.sources.delete(src);
     }
     this.nextStartTime = this.outputAudioContext.currentTime;
     this.outputEnergy = 0;
+  }
+
+  private startCalmDown() {
+    if (this.calmDownId !== null) {
+      cancelAnimationFrame(this.calmDownId);
+      this.calmDownId = null;
+    }
+
+    const step = () => {
+      const next = Math.max(0, this.outputEnergy - 0.02);
+      if (next !== this.outputEnergy) {
+        this.outputEnergy = next;
+      }
+      if (next > 0.001 && this.sources.size === 0) {
+        this.calmDownId = requestAnimationFrame(step);
+      } else {
+        this.outputEnergy = 0;
+        this.calmDownId = null;
+      }
+    };
+
+    this.calmDownId = requestAnimationFrame(step);
   }
 
   private async startRecording() {

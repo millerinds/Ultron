@@ -11,6 +11,9 @@ export class GdmVisualOrb extends LitElement {
   private ctx!: CanvasRenderingContext2D;
   private mesh = this.buildSphereMesh(18, 28);
   private orbState = { baseR: 80, r: 80, spin: 0 };
+  private ampSmooth = 0;
+  private outSmooth = 0;
+  private liquidPhase = 0;
 
   static styles = css`
     :host {
@@ -101,31 +104,44 @@ export class GdmVisualOrb extends LitElement {
     const cx = w / 2, cy = h / 2;
     const time = t * 0.001;
 
+    // Suaviza energia para efeito líquido
+    this.ampSmooth = this.lerp(this.ampSmooth, this.amp, 0.06);
+    this.outSmooth = this.lerp(this.outSmooth, this.out, 0.06);
+    const energy = this.ampSmooth + this.outSmooth;
+    this.liquidPhase += 0.004 + energy * 0.02;
+
     this.ctx.clearRect(0, 0, w, h);
 
-    this.orbState.spin += 0.008 + this.amp * 0.03 + this.out * 0.02;
-    const targetR = this.orbState.baseR * (1 + this.amp * 0.95 + this.out * 0.55);
-    this.orbState.r = this.lerp(this.orbState.r, targetR, 0.24);
+    // Sem giro contínuo; apenas respiração/ondas
+    this.orbState.spin = 0;
+    const targetR = this.orbState.baseR * (1 + energy * 0.22);
+    this.orbState.r = this.lerp(this.orbState.r, targetR, 0.12);
 
     // Glow
-    const glowR = this.orbState.r * (2.1 + (this.amp + this.out) * 0.9);
-    const glow = this.ctx.createRadialGradient(cx, cy, this.orbState.r * 0.2, cx, cy, glowR);
+    const glowR = this.orbState.r * (1.35 + energy * 0.24);
+    const glow = this.ctx.createRadialGradient(cx, cy, this.orbState.r * 0.26, cx, cy, glowR);
     glow.addColorStop(0, `rgba(255, 120, 0, ${0.18 + (this.amp + this.out) * 0.30})`);
     glow.addColorStop(1, "rgba(0,0,0,0)");
+    this.ctx.save();
+    this.ctx.filter = 'blur(3px)';
+    this.ctx.globalCompositeOperation = 'lighter';
     this.ctx.fillStyle = glow;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
     this.ctx.fill();
+    this.ctx.restore();
 
-    const ax = 0.55 + Math.sin(time * 0.7) * 0.12 + (this.amp + this.out) * 0.18;
-    const ay = this.orbState.spin;
-    const az = 0.25 + Math.cos(time * 0.6) * 0.10 + (this.amp + this.out) * 0.10;
+    const ax = 0.35 + Math.sin(time * 0.7 + this.liquidPhase * 0.9) * 0.12 + energy * 0.05;
+    const ay = 0; // sem rotação contínua
+    const az = 0.20 + Math.cos(time * 0.6 + this.liquidPhase * 1.0) * 0.10 + energy * 0.05;
 
     const tv = new Array(this.mesh.verts.length);
     for (let i = 0; i < this.mesh.verts.length; i++) {
       const p = this.mesh.verts[i];
-      const wob = (Math.sin((p.u * 8 + time * 2.2) * Math.PI) + Math.sin((p.v * 10 - time * 1.7) * Math.PI)) * 0.06;
-      const inflate = 1 + wob * (0.7 + (this.amp + this.out) * 2.3) + (this.amp + this.out) * 0.08;
+      const flow = Math.sin((p.u * 6 + time * 0.9 + this.liquidPhase * 1.8) * Math.PI) +
+                   Math.sin((p.v * 7 - time * 0.7 + Math.cos(this.liquidPhase * 1.2)) * Math.PI);
+      const wob = flow * 0.045;
+      const inflate = 1 + wob * (0.32 + energy * 0.9) + energy * 0.03;
       const rp = { x: p.x * inflate, y: p.y * inflate, z: p.z * inflate, u: p.u, v: p.v };
       const r = this.rotate(rp, ax, ay, az);
       const scaled = {
@@ -141,12 +157,14 @@ export class GdmVisualOrb extends LitElement {
       return { idx, z };
     }).sort((a, b) => b.z - a.z);
 
-    this.ctx.lineWidth = 1.0 + (this.amp + this.out) * 2.2;
+    this.ctx.lineWidth = 0.9 + energy * 1.1;
+    this.ctx.lineJoin = 'round';
+    this.ctx.globalCompositeOperation = 'lighter';
     for (const it of order) {
       const f = this.mesh.faces[it.idx];
       const a = tv[f[0]], b = tv[f[1]], c = tv[f[2]], d = tv[f[3]];
       const depth = this.clamp((it.z - 2.6) / 2.2, 0, 1);
-      const alpha = 0.16 + (1 - depth) * 0.58 + (this.amp + this.out) * 0.22;
+      const alpha = 0.18 + (1 - depth) * 0.46 + energy * 0.2;
 
       this.ctx.strokeStyle = `rgba(255, 140, 30, ${alpha})`;
       this.ctx.beginPath();
@@ -155,6 +173,7 @@ export class GdmVisualOrb extends LitElement {
       this.ctx.closePath();
       this.ctx.stroke();
     }
+    this.ctx.globalCompositeOperation = 'source-over';
 
     requestAnimationFrame((t) => this.renderLoop(t));
   }
