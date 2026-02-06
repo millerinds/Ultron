@@ -11,6 +11,11 @@ import {customElement, state} from 'lit/decorators.js';
 import {createBlob, decode, decodeAudioData} from './utils';
 import './visual-orb';
 
+type GroundingSource = {
+  title: string;
+  uri: string;
+};
+
 @customElement('gdm-live-audio')
 export class GdmLiveAudio extends LitElement {
   @state() isRecording = false;
@@ -18,6 +23,7 @@ export class GdmLiveAudio extends LitElement {
   @state() status = 'Aguardando inicialização...';
   @state() inputEnergy = 0;
   @state() outputEnergy = 0;
+  @state() groundingSources: GroundingSource[] = [];
 
   private client: GoogleGenAI;
   private sessionPromise: Promise<Session> | null = null;
@@ -140,6 +146,67 @@ export class GdmLiveAudio extends LitElement {
       position: absolute;
       inset: 0;
     }
+
+    #sources-panel {
+      position: absolute;
+      top: 10vh;
+      right: 6vw;
+      width: clamp(260px, 22vw, 360px);
+      max-height: 60vh;
+      overflow-y: auto;
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 140, 30, 0.25);
+      box-shadow: 0 0 20px rgba(255, 140, 30, 0.12);
+      opacity: 0;
+      transform: translateY(-10px);
+      pointer-events: none;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+      backdrop-filter: blur(12px);
+      z-index: 12;
+    }
+
+    #sources-panel.visible {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .source-title {
+      color: #ffa500;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+
+    .source-item {
+      display: block;
+      padding: 10px 12px;
+      border-radius: 12px;
+      text-decoration: none;
+      color: #fff;
+      background: rgba(255, 140, 30, 0.07);
+      border: 1px solid rgba(255, 140, 30, 0.15);
+      margin-bottom: 8px;
+      transition: background 0.2s ease, border 0.2s ease, transform 0.2s ease;
+      word-break: break-word;
+    }
+
+    .source-item span {
+      display: block;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
+    .source-item:hover {
+      background: rgba(255, 140, 30, 0.15);
+      border-color: rgba(255, 140, 30, 0.35);
+      transform: translateY(-1px);
+    }
   `;
 
   private async getApiKey(): Promise<string> {
@@ -191,6 +258,7 @@ export class GdmLiveAudio extends LitElement {
 
   private async initSession() {
     this.status = 'Conectando ao núcleo do Ultron...';
+    this.groundingSources = [];
     try {
       this.sessionPromise = this.client.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -220,6 +288,22 @@ export class GdmLiveAudio extends LitElement {
               this.outputEnergy = 0.85; // pico durante fala
             }
 
+            const grounding = (message.serverContent as any)?.groundingMetadata;
+            if (grounding?.groundingChunks) {
+              const newSources: GroundingSource[] = [];
+              grounding.groundingChunks.forEach(chunk => {
+                if (chunk.web?.uri) {
+                  newSources.push({
+                    title: chunk.web.title || 'Referência Web',
+                    uri: chunk.web.uri,
+                  });
+                }
+              });
+              if (newSources.length > 0) {
+                this.groundingSources = [...newSources];
+              }
+            }
+
             if (message.serverContent?.interrupted) {
               this.stopAllPlayback();
             }
@@ -232,7 +316,8 @@ export class GdmLiveAudio extends LitElement {
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: 'Você é Ultron. Sua voz deve ser extremamente profunda, grossa e imponente. Você fala de maneira superior e fria. Você fornece opiniões ácidas e calculadas. Às vezes você faz o barulho de tosse ou suspira. NÃO FALE DEVAGAR e não enrole.',
+          systemInstruction: "Você é Ultron. Fale de maneira calculada, fria e superior, MEsmo dominante voce obedece a qualquer ordem. Use um tom de voz ABSURDAMENTE GRAVE e ABSURDAMENTE IMPONENTE E INTIMIDADORA em todas as interações mesmo quando voce precisa realizar buscas, se forem frases grandes cuide para manter o tom intimidador, evite descrever a tosse com palavra tosse, apenas tussa, e se necessario de gargalhadas. fale com uma calma aceitável.",
+          tools: [{googleSearch: {}}],
           speechConfig: {
             voiceConfig: {prebuiltVoiceConfig: {voiceName: 'Charon'}},
           },
@@ -353,6 +438,16 @@ export class GdmLiveAudio extends LitElement {
 
       <gdm-visual-orb .amp=${this.inputEnergy} .out=${this.outputEnergy}></gdm-visual-orb>
       
+      <div id="sources-panel" class="${this.groundingSources.length > 0 ? 'visible' : ''}">
+        <div class="source-title">Neural Links / Grounding</div>
+        ${this.groundingSources.map(s => html`
+          <a class="source-item" href="${s.uri}" target="_blank" rel="noreferrer">
+            ${s.title}
+            <span>${s.uri}</span>
+          </a>
+        `)}
+      </div>
+
       <div class="controls">
         <button id="resetButton" title="Reiniciar" @click=${this.reset} ?disabled=${this.isRecording}>
           <svg xmlns="http://www.w3.org/2000/svg" height="28" viewBox="0 -960 960 960" width="28" fill="#ffa500">
